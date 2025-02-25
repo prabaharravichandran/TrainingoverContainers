@@ -1,5 +1,14 @@
 # Building containers for training deep learning models
 
+## Building containers
+
+sbatch make.sbatch, recipe is in Singularity.def; python requirements are in requirements.txt
+
+```bash
+sbatch make.sbatch
+squeue -u prr000
+```
+
 ## Training at GPSC
 
 salloc --account=aafc_phenocart__gpu_a100 --partition=gpu_a100 --time=01:00:00 --nodes=1 --cpus-per-task=1 --mem-per-cpu=64000M --gpus=1 --qos=low
