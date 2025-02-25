@@ -55,7 +55,7 @@ else:
 
 # Path to the MongoDB config and log files
 MONGO_CONFIG = "/home/ubuntu/mongod.config"
-OUTPUT_PATH = "/home/ubuntu/output"
+OUTPUT_PATH = "/mnt/PhenomicsProjects/TrainingoverContainers/Outputs"
 ACCESS_CONFIG = "/home/ubuntu/config.json"
 
 # Set a fixed random seed for reproducibility
@@ -593,14 +593,14 @@ try:
     print("Yield:", np.isnan(y_yield).any() or np.isinf(y_yield).any())
 
     # distribution:
-    print_distribution(y_flowering, "Flowering Days")
-    print_distribution(y_maturity, "Maturity Days")
-    print_distribution(y_yield, "Yield")
+    #print_distribution(y_flowering, "Flowering Days")
+    #print_distribution(y_maturity, "Maturity Days")
+    #print_distribution(y_yield, "Yield")
 
     # Save histograms as SVG files
-    plot_histogram(y_flowering, "Flowering (Days)", filename=f"{OUTPUT_PATH}flowering_histogram.svg")
-    plot_histogram(y_maturity, "Maturity (Days)", filename=f"{OUTPUT_PATH}maturity_histogram.svg")
-    plot_histogram(y_yield, "Yield (tonne/ha)", filename=f"{OUTPUT_PATH}yield_histogram.svg")
+    #plot_histogram(y_flowering, "Flowering (Days)", filename=f"{OUTPUT_PATH}flowering_histogram.svg")
+    #plot_histogram(y_maturity, "Maturity (Days)", filename=f"{OUTPUT_PATH}maturity_histogram.svg")
+    #plot_histogram(y_yield, "Yield (tonne/ha)", filename=f"{OUTPUT_PATH}yield_histogram.svg")
 
 # %% STOP MongoDB
 finally:

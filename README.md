@@ -11,7 +11,24 @@ squeue -u prr000
 
 ## Training at GPSC
 
-salloc --account=aafc_phenocart__gpu_a100 --partition=gpu_a100 --time=01:00:00 --nodes=1 --cpus-per-task=1 --mem-per-cpu=64000M --gpus=1 --qos=low
+salloc - allocate resources for a job in HPC
+
+```bash
+salloc --account=aafc_phenocart__gpu_a100 \
+ --partition=gpu_a100 \
+ --time=01:00:00 \
+ --nodes=1 \
+ --cpus-per-task=4 \
+ --mem-per-cpu=64000M \
+ --gpus=4 \
+ --qos=low
+```
+
+Use srun to launch tasks within an allocated job
+```bash
+squeue -u prr000
+srun --job-id=xxxxxxx --pty bash
+```
 
 ```bash
 . ssmuse-sh -d /fs/ssm/hpco/exp/cuda-12.4.1
@@ -47,4 +64,10 @@ child process started successfully, parent exiting
 ```bash
 . /home/venv/bin/activate
 python /home/ubuntu/scripts/yieldestimation.py
+```
+
+We can also add the commands to activate the environment and run the script runscript ".singularity.d/runscript" and covert into .sif
+
+```bash
+singularity build trainingcontainer_sandbox.sif trainingcontainer_sandbox/
 ```

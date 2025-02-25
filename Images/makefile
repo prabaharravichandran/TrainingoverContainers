@@ -4,7 +4,7 @@
 IMAGE_NAME = trainingcontainer.sif
 SANDBOX_NAME = trainingcontainer_sandbox
 OVERLAY_NAME = training_overlay.img  # Add an overlay
-DEF_FILE = Singularity.def
+DEF_FILE = singularity.def
 BUILD_DIR = /gpfs/fs7/aafc/phenocart/PhenomicsProjects/TrainingoverContainers/Images
 TMP_DIR = /tmp/$(SANDBOX_NAME)
 
