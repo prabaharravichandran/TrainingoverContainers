@@ -443,7 +443,7 @@ try:
             {"lidar_id": {"$exists": True}},
             {"flowering": {"$exists": True, "$ne": float("NaN")}},
             {"maturity": {"$exists": True, "$ne": float("NaN")}},
-            {"yield": {"$exists": True, "$ne": float("NaN")}},
+            {"yield": {"$exists": True, "$ne": None, "$type": ["double", "int"]}},
             {
                 "$expr": {
                     "$eq": [{"$size": "$rgbimage_ids"}, {"$size": "$nirimage_ids"}]
@@ -459,7 +459,7 @@ try:
 
     # criteria = {}
 
-    documents = list(collection.find(criteria))
+    documents = list(collection.find(criteria).limit(50))
 
     # Shuffle the documents
     random.shuffle(documents)
@@ -569,7 +569,8 @@ try:
     # Convert outputs to NumPy arrays
     y_flowering = np.array(y_flowering).reshape(-1, 1)
     y_maturity = np.array(y_maturity).reshape(-1, 1)
-    y_yield = np.array(y_yield).reshape(-1, 1)
+    y_yield = np.array(y_yield, dtype=np.float32).reshape(-1, 1)
+    y_yield = y_maturity.astype(float).astype(np.float32)
 
     print(f"x_train_rgbimage: {type(x_rgbimage)}, shape: {x_rgbimage.shape}")
     print(f"x_train_nirimage: {type(x_nirimage)}, shape: {x_nirimage.shape}")
@@ -580,6 +581,10 @@ try:
     print(f"y_train_flowering: {type(y_flowering)}, shape: {y_flowering.shape}")
     print(f"y_train_maturity: {type(y_maturity)}, shape: {y_maturity.shape}")
     print(f"y_train_maturity: {type(y_yield)}, shape: {y_yield.shape}")
+    if np.issubdtype(y_yield.dtype, np.number):
+        print("y_yield contains only numeric values")
+    else:
+        print("y_yield contains non-numeric values")
 
     print("Checking for NaNs or infinities in the data...")
     print("RGB Images:", np.isnan(x_rgbimage).any() or np.isinf(x_rgbimage).any())
@@ -899,6 +904,7 @@ with strategy.scope():
 
 model.summary()
 
+'''
 from tensorflow.keras.utils import plot_model
 
 # Plot model
@@ -909,6 +915,8 @@ plot_model(model,
            rankdir='TD',  # Change layout to left-to-right
            dpi=150
            )
+
+'''
 
 # Set up early stopping
 early_stopping = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=25, restore_best_weights=True)
@@ -1007,7 +1015,7 @@ for repetition in range(1, 51):
                 "weather_data": x_chunk_weather_train,
             },
             {
-                "yield": y_chunk_yield_train,
+                "yield": np.array(y_chunk_yield_train, dtype=np.float32),
             },
             validation_data=(
                 {
@@ -1019,7 +1027,7 @@ for repetition in range(1, 51):
                     "weather_data": x_chunk_weather_val,
                 },
                 {
-                    "yield": y_chunk_yield_val,
+                    "yield": np.array(y_chunk_yield_val, dtype=np.float32),
                 },
             ),
             epochs=1000,

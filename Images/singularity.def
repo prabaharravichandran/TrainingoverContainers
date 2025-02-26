@@ -44,7 +44,7 @@ From: ubuntu:24.04
     dpkg -i cuda-keyring_1.1-1_all.deb
 
     apt-get update
-    apt install -y nvidia-cuda-toolkit
+    apt-get install -y nvidia-cuda-toolkit
 
     # Install Python
     apt update
