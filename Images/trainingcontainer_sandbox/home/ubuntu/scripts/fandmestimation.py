@@ -54,6 +54,7 @@ else:
     print("No GPU detected.")
 
 # Path to the MongoDB config and log files
+MONITOR_SCRIPT_PATH = "/home/ubuntu/scripts/SystemMonitor.sh"
 MONGO_CONFIG = "/home/ubuntu/mongod.config"
 OUTPUT_PATH = "/mnt/PhenomicsProjects/TrainingoverContainers/Outputs"
 ACCESS_CONFIG = "/home/ubuntu/config.json"
@@ -74,6 +75,19 @@ import subprocess
 
 stop_monitoring = False  # Flag to stop the monitoring thread
 
+# Function to start the monitoring script
+def start_monitoring():
+    print("Starting system monitoring...")
+    process = subprocess.Popen(["bash", MONITOR_SCRIPT_PATH], stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=os.setsid)
+    return process
+
+# Function to stop the monitoring script
+def stop_monitoring(process):
+    print("Stopping system monitoring...")
+    os.killpg(os.getpgid(process.pid), signal.SIGTERM)  # Terminate the process group
+
+# Start monitoring
+process = start_monitoring()
 
 def is_mongod_running():
     """Check if mongod is running."""
@@ -81,7 +95,6 @@ def is_mongod_running():
         if 'mongod' in proc.info['name']:
             return proc.info['pid']
     return None
-
 
 def start_mongod():
     """Start mongod if not already running."""
@@ -525,11 +538,11 @@ try:
 
                 # Image date, seeding date, flowering and maturity labels
                 try:
-                    seeding_date_julian = get_julian_day(document['seedingdate'])
-                    image_date_julian = get_julian_day(document['date'])
+                    seedingdate_data = get_julian_day(document['seedingdate'])
+                    imagedate_data = get_julian_day(document['date'])
 
                     # Convert flowering and maturity to Julian days
-                    flowering, maturity = document['flowering'], document['maturity']
+                    flowering_data, maturity_data = document['flowering'] / 100, document['maturity'] / 100
 
                 except Exception as e:
                     print(f"Error reading date and label data for document {document.get('id', 'Unknown')}: {e}")
@@ -541,10 +554,10 @@ try:
                     x_nirimage.append(nir_data)
                     x_weather.append(weather_data)
                     x_lidar.append(lidar_data)
-                    x_imagedate.append(image_date_julian)
-                    x_seedingdate.append(seeding_date_julian)
-                    y_flowering.append(flowering)
-                    y_maturity.append(maturity)
+                    x_imagedate.append(imagedate_data)
+                    x_seedingdate.append(seedingdate_data)
+                    y_flowering.append(flowering_data)
+                    y_maturity.append(maturity_data)
 
             except Exception as e:
                 print(f"Error: {e}")
@@ -553,13 +566,12 @@ try:
 
     # %%DL
     # Convert inputs to NumPy arrays
-    x_rgbimage = np.array(x_rgbimage) / 255
-    x_nirimage = np.array(x_nirimage) / 255
+    x_rgbimage = np.array(x_rgbimage)
+    x_nirimage = np.array(x_nirimage)
     x_seedingdate = np.array(x_seedingdate).reshape(-1, 1)
     x_imagedate = np.array(x_imagedate).reshape(-1, 1)
-    x_weather = np.array(x_weather).transpose(0, 2, 3,
-                                              1)  # Rearrange dimensions to (batch_size, height, width, channels)
-    x_lidar = np.array(x_lidar) / 150
+    x_weather = np.array(x_weather).transpose(0, 2, 3, 1) # Rearrange dimensions to (batch_size, height, width, channels)
+    x_lidar = np.array(x_lidar)
 
     # Convert outputs to NumPy arrays
     y_flowering = np.array(y_flowering).reshape(-1, 1)
@@ -601,19 +613,12 @@ finally:
 stop_mongod()
 monitor_thread.join()  # Wait for the thread to exit
 # %%
-
 # -----------------------------
-# 1. STRATEGY FOR MULTI-GPU
-# -----------------------------
-strategy = tf.distribute.MirroredStrategy()
-
-
-# -----------------------------
-# 2. BUILDING BLOCKS
+# 1. NORMALIZATION HELPERS
 # -----------------------------
 def conv_bn_relu(x, filters, kernel_size=3, strides=1, padding='same',
                  use_bias=False, kernel_regularizer=None):
-    """A convenience function for Conv -> BN -> ReLU."""
+    """Conv -> BN -> ReLU."""
     x = layers.Conv2D(
         filters, kernel_size, strides=strides, padding=padding,
         use_bias=use_bias, kernel_regularizer=kernel_regularizer
@@ -624,10 +629,7 @@ def conv_bn_relu(x, filters, kernel_size=3, strides=1, padding='same',
 
 
 def squeeze_excite_block(x, reduction=16):
-    """
-    Squeeze-and-Excitation block.
-    Scales channel features using global context.
-    """
+    """Squeeze-and-Excitation block."""
     filters = x.shape[-1]
     se = layers.GlobalAveragePooling2D()(x)
     # Squeeze
@@ -641,14 +643,10 @@ def squeeze_excite_block(x, reduction=16):
 
 def bottleneck_res_se_block(inputs, filters, strides=1, reduction=16,
                             kernel_regularizer=None):
-    """
-    A "bottleneck" Residual block with Squeeze-and-Excitation.
-    Layout:
-        1x1 conv -> 3x3 conv -> 1x1 conv -> SE -> Add shortcut -> ReLU
-    """
+    """Bottleneck block with Squeeze-and-Excitation."""
     shortcut = inputs
 
-    # If we need to match dimensions for the shortcut
+    # Adjust shortcut if needed
     if (inputs.shape[-1] != filters) or (strides != 1):
         shortcut = layers.Conv2D(
             filters, kernel_size=1, strides=strides, padding='same',
@@ -656,8 +654,8 @@ def bottleneck_res_se_block(inputs, filters, strides=1, reduction=16,
         )(shortcut)
         shortcut = layers.BatchNormalization()(shortcut)
 
-    # Bottleneck part
-    x = conv_bn_relu(inputs, filters // 4, kernel_size=1, strides=1,
+    # Bottleneck
+    x = conv_bn_relu(inputs, filters // 4, kernel_size=1,
                      kernel_regularizer=kernel_regularizer)
     x = conv_bn_relu(x, filters // 4, kernel_size=3, strides=strides,
                      kernel_regularizer=kernel_regularizer)
@@ -665,7 +663,7 @@ def bottleneck_res_se_block(inputs, filters, strides=1, reduction=16,
                       kernel_regularizer=kernel_regularizer)(x)
     x = layers.BatchNormalization()(x)
 
-    # Squeeze and Excitation
+    # Squeeze-and-Excite
     x = squeeze_excite_block(x, reduction=reduction)
 
     # Merge
@@ -674,37 +672,39 @@ def bottleneck_res_se_block(inputs, filters, strides=1, reduction=16,
     return x
 
 
+# -----------------------------
+# 2. BRANCHES
+# -----------------------------
 def build_image_branch(
         input_shape,
         initial_filters=32,
         num_blocks=3,
         name_prefix="image_branch",
-        kernel_regularizer=None
+        kernel_regularizer=None,
+        scale_factor=1.0 / 255.0,  # <--- specify default
 ):
     """
-    Builds a deeper convolutional branch for an image-like input.
-    Uses multiple bottleneck residual SE blocks.
+    Builds a CNN branch for image-like input.
+    The first layer rescales so you don't have to do x/255 externally.
     """
     inputs = Input(shape=input_shape, name=name_prefix + "_input")
 
-    # Initial Conv -> BN -> ReLU
-    x = conv_bn_relu(inputs, initial_filters, kernel_size=3,
-                     kernel_regularizer=kernel_regularizer)
+    # Rescale so you do NOT have to do image/255 outside the model
+    x = layers.Rescaling(scale_factor)(inputs)
 
-    # Downsample
+    # Initial Conv -> BN -> ReLU
+    x = conv_bn_relu(x, initial_filters, kernel_size=3,
+                     kernel_regularizer=kernel_regularizer)
     x = layers.MaxPooling2D((2, 2))(x)
 
-    # Stack several residual SE blocks
-    filters = initial_filters * 2  # increase filters
+    # Residual SE blocks
+    filters = initial_filters * 2
     for i in range(num_blocks):
-        # each block can optionally increase filters if desired
         x = bottleneck_res_se_block(
             x, filters=filters,
-            strides=2 if i == 0 else 1,  # downsample in first block
+            strides=2 if i == 0 else 1,
             kernel_regularizer=kernel_regularizer
         )
-
-    # Global average pool
     x = layers.GlobalAveragePooling2D()(x)
     return Model(inputs, x, name=name_prefix)
 
@@ -713,18 +713,26 @@ def build_dense_branch(
         input_dim,
         units_list=[64, 128, 256],
         name_prefix="dense_branch",
-        kernel_regularizer=None
+        kernel_regularizer=None,
+        scalar_scale=None,  # <--- new option for dividing scalars
 ):
-    """Builds a simple MLP branch for scalar inputs (dates, etc.)."""
+    """
+    Builds an MLP branch for scalar input.
+    If scalar_scale is not None, apply x/scalar_scale inside the model.
+    """
     inputs = Input(shape=(input_dim,), name=f"{name_prefix}_input")
 
-    x = inputs
+    # If you want x / 365 for days, do it here:
+    if scalar_scale is not None:
+        x = layers.Lambda(lambda z: z / scalar_scale)(inputs)
+    else:
+        x = inputs
+
     for i, units in enumerate(units_list):
         x = layers.Dense(
             units, activation='relu', kernel_regularizer=kernel_regularizer,
-            name=f"{name_prefix}_dense_{i}"  # Ensuring unique name
+            name=f"{name_prefix}_dense_{i}"
         )(x)
-
     return Model(inputs, x, name=name_prefix)
 
 
@@ -733,25 +741,28 @@ def build_weather_branch(
         initial_filters=64,
         num_blocks=2,
         name_prefix="weather_branch",
-        kernel_regularizer=None
+        kernel_regularizer=None,
+        scale_factor=None
 ):
     """
-    Builds a CNN branch for the weather data.
-    We also insert a couple of bottleneck-res-SE blocks for deeper feature extraction.
+    Builds a CNN branch for weather data.
+    If scale_factor is provided, you can do a Rescaling inside.
     """
     inputs = Input(shape=input_shape, name=name_prefix + "_input")
+    x = inputs
 
-    # Initial Conv -> BN -> ReLU
-    x = conv_bn_relu(inputs, initial_filters, kernel_size=3,
+    # If you want to do some scale like x/100 or x/1000 for weather, do it:
+    if scale_factor is not None:
+        x = layers.Rescaling(scale_factor)(x)
+
+    x = conv_bn_relu(x, initial_filters, kernel_size=3,
                      kernel_regularizer=kernel_regularizer)
     x = layers.MaxPooling2D(pool_size=(2, 2))(x)
 
-    # A few residual SE blocks
     filters = initial_filters * 2
     for i in range(num_blocks):
         x = bottleneck_res_se_block(
-            x, filters=filters,
-            strides=1,  # no downsampling here, but you can adjust if needed
+            x, filters=filters, strides=1,
             kernel_regularizer=kernel_regularizer
         )
 
@@ -760,66 +771,68 @@ def build_weather_branch(
 
 
 # -----------------------------
-# 3. MODEL DEFINITION
+# 3. BUILD / COMPILE MODEL
 # -----------------------------
+# Example: multi-GPU strategy
+strategy = tf.distribute.MirroredStrategy()
+
 with strategy.scope():
-    # ----- IMAGE BRANCHES -----
-    # RGB (512 x 612 x 3)
+    reg = regularizers.l2(1e-5)
+
+    # Image branches
     rgb_branch = build_image_branch(
         input_shape=(512, 612, 3),
         initial_filters=16,
-        num_blocks=4,  # you can increase for more depth
+        num_blocks=4,
         name_prefix="rgb",
-        kernel_regularizer=regularizers.l2(1e-4)
+        kernel_regularizer=reg,
+        scale_factor=1.0 / 255.0  # Now the model does x/255 for you
     )
-
-    # NIR (512 x 612 x 1)
     nir_branch = build_image_branch(
         input_shape=(512, 612, 1),
         initial_filters=16,
         num_blocks=4,
         name_prefix="nir",
-        kernel_regularizer=regularizers.l2(1e-4)
+        kernel_regularizer=reg,
+        scale_factor=1.0 / 255.0
     )
-
-    # LiDAR (100 x 300 x 3)
     lidar_branch = build_image_branch(
         input_shape=(100, 300, 3),
-        initial_filters=32,  # can start bigger for LiDAR
+        initial_filters=32,
         num_blocks=4,
         name_prefix="lidar",
-        kernel_regularizer=regularizers.l2(1e-4)
+        kernel_regularizer=reg,
+        scale_factor=1.0 / 150.0  # e.g., if LiDAR range ~150
     )
 
-    # ----- SCALAR BRANCHES -----
-    # Seeding date (1-dimensional)
+    # Scalar branches
+    # If your scalar is "days" up to 365, let the model do /365:
     seeding_branch = build_dense_branch(
         input_dim=1,
         units_list=[64, 128, 256],
         name_prefix="seeding",
-        kernel_regularizer=regularizers.l2(1e-4)
+        kernel_regularizer=reg,
+        scalar_scale=365.0
     )
-
-    # Image date (1-dimensional)
     image_date_branch = build_dense_branch(
         input_dim=1,
         units_list=[64, 128, 256],
-        name_prefix="image_date_branch",  # Ensure unique name
-        kernel_regularizer=regularizers.l2(1e-4)
+        name_prefix="image_date_branch",
+        kernel_regularizer=reg,
+        scalar_scale=365.0
     )
 
-    # ----- WEATHER BRANCH -----
-    # Weather input (8 x 8 x 146)
+    # Weather branch, if you'd like to scale internally, do so:
     weather_branch = build_weather_branch(
         input_shape=(8, 8, 146),
         initial_filters=64,
         num_blocks=4,
         name_prefix="weather",
-        kernel_regularizer=regularizers.l2(1e-4)
+        kernel_regularizer=reg,
+        scale_factor=1.0/100.0
     )
 
-    # ----- COLLECT INPUTS & MERGE -----
-    # Instantiate each branch so we can call them
+    # Inputs
     rgb_input = tf.keras.Input(shape=(512, 612, 3), name="rgb_image")
     nir_input = tf.keras.Input(shape=(512, 612, 1), name="nir_image")
     lidar_input = tf.keras.Input(shape=(100, 300, 3), name="lidar_data")
@@ -827,7 +840,7 @@ with strategy.scope():
     image_date_input = tf.keras.Input(shape=(1,), name="image_date")
     weather_input = tf.keras.Input(shape=(8, 8, 146), name="weather_data")
 
-    # Extract features from each branch
+    # Extract features
     rgb_features = rgb_branch(rgb_input)
     nir_features = nir_branch(nir_input)
     lidar_features = lidar_branch(lidar_input)
@@ -835,7 +848,7 @@ with strategy.scope():
     image_date_features = image_date_branch(image_date_input)
     weather_features = weather_branch(weather_input)
 
-    # Concatenate all features
+    # Concatenate
     combined = layers.Concatenate()([
         rgb_features,
         nir_features,
@@ -845,73 +858,69 @@ with strategy.scope():
         weather_features
     ])
 
-    # ----- SHARED FULLY CONNECTED LAYERS -----
-    x = layers.Dense(512, activation='relu', kernel_regularizer=regularizers.l2(1e-4))(combined)
+    # Shared dense layers
+    x = layers.Dense(512, activation='relu', kernel_regularizer=reg)(combined)
     x = layers.LayerNormalization()(x)
     x = layers.Dropout(0.2)(x)
 
-    x = layers.Dense(1024, activation='relu', kernel_regularizer=regularizers.l2(1e-4))(x)
+    x = layers.Dense(1024, activation='relu', kernel_regularizer=reg)(x)
     x = layers.LayerNormalization()(x)
     x = layers.Dropout(0.2)(x)
 
-    x = layers.Dense(512, activation='relu', kernel_regularizer=regularizers.l2(1e-4))(x)
+    x = layers.Dense(512, activation='relu', kernel_regularizer=reg)(x)
     x = layers.LayerNormalization()(x)
     x = layers.Dropout(0.2)(x)
 
-    # ----- FLOWERING HEAD -----
-    flowering = layers.Dense(128, activation='relu', kernel_regularizer=regularizers.l2(1e-4))(x)
+    # Flowering head
+    flowering = layers.Dense(128, activation='relu', kernel_regularizer=reg)(x)
     flowering = layers.LayerNormalization()(flowering)
     flowering = layers.Dropout(0.1)(flowering)
-    flowering = layers.Dense(64, activation='relu', kernel_regularizer=regularizers.l2(1e-4))(flowering)
+    flowering = layers.Dense(64, activation='relu', kernel_regularizer=reg)(flowering)
     flowering = layers.LayerNormalization()(flowering)
     flowering_output = layers.Dense(1, activation='linear', name="flowering")(flowering)
 
-    # ----- MATURITY HEAD -----
-    maturity = layers.Dense(128, activation='relu', kernel_regularizer=regularizers.l2(1e-4))(x)
+    # Maturity head
+    maturity = layers.Dense(128, activation='relu', kernel_regularizer=reg)(x)
     maturity = layers.LayerNormalization()(maturity)
     maturity = layers.Dropout(0.1)(maturity)
-    maturity = layers.Dense(64, activation='relu', kernel_regularizer=regularizers.l2(1e-4))(maturity)
+    maturity = layers.Dense(64, activation='relu', kernel_regularizer=reg)(maturity)
     maturity = layers.LayerNormalization()(maturity)
     maturity_output = layers.Dense(1, activation='linear', name="maturity")(maturity)
 
-    # ----- BUILD & COMPILE MODEL -----
+    # Build & compile
     model = Model(
-        inputs=[
-            rgb_input,
-            nir_input,
-            lidar_input,
-            seeding_input,
-            image_date_input,
-            weather_input
-        ],
+        inputs=[rgb_input, nir_input, lidar_input,
+                seeding_input, image_date_input, weather_input],
         outputs=[flowering_output, maturity_output],
         name="MultiModal_ResSE_Model"
     )
 
+    optimizer = Adam(learning_rate=1e-4, clipnorm=1.0)
     model.compile(
-        optimizer=Adam(learning_rate=1e-3),
+        optimizer=optimizer,
         loss={"flowering": "mse", "maturity": "mse"},
-        loss_weights={"flowering": 0.75, "maturity": 0.25},
+        loss_weights={"flowering": 0.6, "maturity": 0.4},
         metrics={"flowering": "mae", "maturity": "mae"}
     )
 
 model.summary()
 
+'''
 from tensorflow.keras.utils import plot_model
 
 # Plot model with enhanced visibility
 plot_model(
     model,
-    to_file='/gpfs/fs7/aafc/phenocart/PhenomicsProjects/UFPSGPSCProject/2_RGB/FloweringandMaturity/Output/FandM_plot_attn_nEW_detailed.png',
+    to_file=f'{OUTPUT_PATH}/FandM_plot_attn_nEW_detailed.png',
     show_shapes=True,  # Show the tensor shapes at each layer
     show_layer_names=True,  # Show layer names
     rankdir='TD',  # Change layout from 'TD' (top-down) to 'TB' (top-bottom)
     expand_nested=True,  # Expand nested models (submodels inside layers)
     dpi=150  # Increase DPI for better clarity
 )
-
+'''
 # Set up early stopping
-early_stopping = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=25, restore_best_weights=True)
+early_stopping = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
 
 # Initialize best metrics for tracking
 best_r2_flowering = -np.inf
@@ -1031,7 +1040,7 @@ for repetition in range(1, 51):
                 },
             ),
             epochs=1000,
-            batch_size=8,
+            batch_size=32,
             callbacks=[early_stopping],
             verbose=1
         )
@@ -1056,9 +1065,7 @@ for repetition in range(1, 51):
     y_pred_maturity = y_pred[1].flatten()
 
     # Flatten the true values
-    y_true_flowering = y_test_flowering.flatten()  # Set up early stopping
-    early_stopping = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=25, restore_best_weights=True)
-
+    y_true_flowering = y_test_flowering.flatten()
     y_true_maturity = y_test_maturity.flatten()
 
     # Metrics for flowering
@@ -1077,7 +1084,7 @@ for repetition in range(1, 51):
     if R2_flowering > best_r2_flowering or RMSE_flowering < best_rmse_flowering:
         best_r2_flowering = R2_flowering
         best_rmse_flowering = RMSE_flowering
-        best_model_path_flowering = '/gpfs/fs7/aafc/phenocart/PhenomicsProjects/UFPSGPSCProject/2_RGB/FloweringandMaturity/Output/best_model_for_flowering_attn.h5'
+        best_model_path_flowering = f'{OUTPUT_PATH}/flowering_v2.h5'
         model.save(best_model_path_flowering)  # Save the best model for flowering
         print(f"New best flowering model saved with R²: {R2_flowering:.2f}, RMSE: {RMSE_flowering:.2f}")
 
@@ -1085,7 +1092,7 @@ for repetition in range(1, 51):
     if R2_maturity > best_r2_maturity or RMSE_maturity < best_rmse_maturity:
         best_r2_maturity = R2_maturity
         best_rmse_maturity = RMSE_maturity
-        best_model_path_maturity = '/gpfs/fs7/aafc/phenocart/PhenomicsProjects/UFPSGPSCProject/2_RGB/FloweringandMaturity/Output/best_model_for_maturity_attn.h5'
+        best_model_path_maturity = f'{OUTPUT_PATH}/maturity_v2.h5'
         model.save(best_model_path_maturity)  # Save the best model for maturity
         print(f"New best maturity model saved with R²: {R2_maturity:.2f}, RMSE: {RMSE_maturity:.2f}")
 
@@ -1112,7 +1119,7 @@ for repetition in range(1, 51):
 
     # Save results to an Excel file
     results_df = pd.DataFrame(results)
-    results_file_path = '/gpfs/fs7/aafc/phenocart/PhenomicsProjects/UFPSGPSCProject/2_RGB/FloweringandMaturity/Output/FloweringandMaturity_attn.xlsx'
+    results_file_path = f'{OUTPUT_PATH}/FandM_v2.xlsx'
     results_df.to_excel(results_file_path, index=False)
     print(f"Results saved to {results_file_path}")
 
@@ -1130,4 +1137,6 @@ try:
 except subprocess.CalledProcessError as e:
     print(f"Failed to send email: {e}")
 
+# Stop monitoring
+stop_monitoring(process)
 
