@@ -428,8 +428,9 @@ def plot_histogram(data, label, num_bins=10, filename="histogram.svg"):
     print(f"Histogram saved as {filename}")
 
 
-# %% Step 1: Filter documents based on criteria
 try:
+
+    # %% Step 1: Filter documents based on criteria
     # Clear GPU memory after processing the chunk
     clear_gpu_memory()
 
@@ -443,7 +444,6 @@ try:
             {"lidar_id": {"$exists": True}},
             {"flowering": {"$exists": True, "$ne": float("NaN")}},
             {"maturity": {"$exists": True, "$ne": float("NaN")}},
-            {"yield": {"$exists": True, "$ne": None, "$type": ["double", "int"]}},
             {
                 "$expr": {
                     "$eq": [{"$size": "$rgbimage_ids"}, {"$size": "$nirimage_ids"}]
@@ -457,9 +457,7 @@ try:
         ]
     }
 
-    # criteria = {}
-
-    documents = list(collection.find(criteria).limit(50))
+    documents = list(collection.find(criteria))
 
     # Shuffle the documents
     random.shuffle(documents)
@@ -472,8 +470,8 @@ try:
     # Initialize empty lists for training data
 
     x_rgbimage, x_nirimage, x_weather, x_lidar = [], [], [], []
-    x_imagedate, x_seedingdate, x_location = [], [], []
-    y_flowering, y_maturity, y_yield = [], [], []
+    x_imagedate, x_seedingdate = [], []
+    y_flowering, y_maturity = [], []
 
     for document in tqdm(documents, desc="Processing documents"):
         rgbimage_ids = document.get('rgbimage_ids', [])
@@ -482,7 +480,7 @@ try:
         for rgb_id, nir_id in zip(rgbimage_ids, nirimage_ids):
             rgb_data, nir_data, weather_data, lidar_data = None, None, None, None
             imagedate_data, seedingdate_data = None, None
-            flowering_data, maturity_data, yield_data = None, None, None
+            flowering_data, maturity_data = None, None
             append_data = True  # Flag to track if there was an error for the document
 
             try:
@@ -531,9 +529,7 @@ try:
                     image_date_julian = get_julian_day(document['date'])
 
                     # Convert flowering and maturity to Julian days
-                    flowering_data, maturity_data, yield_data = document['flowering'], document['maturity'], (
-                                document['yield'] / 1000)
-                    location_data = document['location']
+                    flowering, maturity = document['flowering'], document['maturity']
 
                 except Exception as e:
                     print(f"Error reading date and label data for document {document.get('id', 'Unknown')}: {e}")
@@ -547,9 +543,8 @@ try:
                     x_lidar.append(lidar_data)
                     x_imagedate.append(image_date_julian)
                     x_seedingdate.append(seeding_date_julian)
-                    y_flowering.append(flowering_data)
-                    y_maturity.append(maturity_data)
-                    y_yield.append(yield_data)
+                    y_flowering.append(flowering)
+                    y_maturity.append(maturity)
 
             except Exception as e:
                 print(f"Error: {e}")
@@ -569,8 +564,14 @@ try:
     # Convert outputs to NumPy arrays
     y_flowering = np.array(y_flowering).reshape(-1, 1)
     y_maturity = np.array(y_maturity).reshape(-1, 1)
-    y_yield = np.array(y_yield, dtype=np.float32).reshape(-1, 1)
-    y_yield = y_maturity.astype(float).astype(np.float32)
+
+    # distribution:
+    # print_distribution(y_flowering, "Flowering Days")
+    # print_distribution(y_maturity, "Maturity Days")
+
+    # Save histograms as SVG files
+    # plot_histogram_and_save(y_flowering, "Flowering Days", filename=f"{OUTPUT_PATH}flowering_histogram.svg")
+    # plot_histogram_and_save(y_maturity, "Maturity Days", filename=f"{OUTPUT_PATH}maturity_histogram.svg")
 
     print(f"x_train_rgbimage: {type(x_rgbimage)}, shape: {x_rgbimage.shape}")
     print(f"x_train_nirimage: {type(x_nirimage)}, shape: {x_nirimage.shape}")
@@ -580,11 +581,6 @@ try:
     print(f"x_train_weather: {type(x_weather)}, shape: {x_weather.shape}")
     print(f"y_train_flowering: {type(y_flowering)}, shape: {y_flowering.shape}")
     print(f"y_train_maturity: {type(y_maturity)}, shape: {y_maturity.shape}")
-    print(f"y_train_maturity: {type(y_yield)}, shape: {y_yield.shape}")
-    if np.issubdtype(y_yield.dtype, np.number):
-        print("y_yield contains only numeric values")
-    else:
-        print("y_yield contains non-numeric values")
 
     print("Checking for NaNs or infinities in the data...")
     print("RGB Images:", np.isnan(x_rgbimage).any() or np.isinf(x_rgbimage).any())
@@ -595,17 +591,6 @@ try:
     print("Weather Data:", np.isnan(x_weather).any() or np.isinf(x_weather).any())
     print("Flowering:", np.isnan(y_flowering).any() or np.isinf(y_flowering).any())
     print("Maturity:", np.isnan(y_maturity).any() or np.isinf(y_maturity).any())
-    print("Yield:", np.isnan(y_yield).any() or np.isinf(y_yield).any())
-
-    # distribution:
-    #print_distribution(y_flowering, "Flowering Days")
-    #print_distribution(y_maturity, "Maturity Days")
-    #print_distribution(y_yield, "Yield")
-
-    # Save histograms as SVG files
-    #plot_histogram(y_flowering, "Flowering (Days)", filename=f"{OUTPUT_PATH}flowering_histogram.svg")
-    #plot_histogram(y_maturity, "Maturity (Days)", filename=f"{OUTPUT_PATH}maturity_histogram.svg")
-    #plot_histogram(y_yield, "Yield (tonne/ha)", filename=f"{OUTPUT_PATH}yield_histogram.svg")
 
 # %% STOP MongoDB
 finally:
@@ -615,8 +600,8 @@ finally:
 # To stop monitoring later, call:
 stop_mongod()
 monitor_thread.join()  # Wait for the thread to exit
-
 # %%
+
 # -----------------------------
 # 1. STRATEGY FOR MULTI-GPU
 # -----------------------------
@@ -874,12 +859,20 @@ with strategy.scope():
     x = layers.Dropout(0.2)(x)
 
     # ----- FLOWERING HEAD -----
-    yield_data = layers.Dense(128, activation='relu', kernel_regularizer=regularizers.l2(1e-4))(x)
-    yield_data = layers.LayerNormalization()(yield_data)
-    yield_data = layers.Dropout(0.1)(yield_data)
-    yield_data = layers.Dense(64, activation='relu', kernel_regularizer=regularizers.l2(1e-4))(yield_data)
-    yield_data = layers.LayerNormalization()(yield_data)
-    yield_output = layers.Dense(1, activation='linear', name="yield")(yield_data)
+    flowering = layers.Dense(128, activation='relu', kernel_regularizer=regularizers.l2(1e-4))(x)
+    flowering = layers.LayerNormalization()(flowering)
+    flowering = layers.Dropout(0.1)(flowering)
+    flowering = layers.Dense(64, activation='relu', kernel_regularizer=regularizers.l2(1e-4))(flowering)
+    flowering = layers.LayerNormalization()(flowering)
+    flowering_output = layers.Dense(1, activation='linear', name="flowering")(flowering)
+
+    # ----- MATURITY HEAD -----
+    maturity = layers.Dense(128, activation='relu', kernel_regularizer=regularizers.l2(1e-4))(x)
+    maturity = layers.LayerNormalization()(maturity)
+    maturity = layers.Dropout(0.1)(maturity)
+    maturity = layers.Dense(64, activation='relu', kernel_regularizer=regularizers.l2(1e-4))(maturity)
+    maturity = layers.LayerNormalization()(maturity)
+    maturity_output = layers.Dense(1, activation='linear', name="maturity")(maturity)
 
     # ----- BUILD & COMPILE MODEL -----
     model = Model(
@@ -891,39 +884,40 @@ with strategy.scope():
             image_date_input,
             weather_input
         ],
-        outputs=[yield_output],
+        outputs=[flowering_output, maturity_output],
         name="MultiModal_ResSE_Model"
     )
 
     model.compile(
         optimizer=Adam(learning_rate=1e-3),
-        loss={"yield": "mse"},
-        loss_weights={"yield": 1},
-        metrics={"yield": "mae"}
+        loss={"flowering": "mse", "maturity": "mse"},
+        loss_weights={"flowering": 0.75, "maturity": 0.25},
+        metrics={"flowering": "mae", "maturity": "mae"}
     )
 
 model.summary()
 
-'''
 from tensorflow.keras.utils import plot_model
 
-# Plot model
-plot_model(model,
-           to_file='/gpfs/fs7/aafc/phenocart/PhenomicsProjects/UFPSGPSCProject/2_RGB/FloweringandMaturity/Output/yield_plot_attn.png',
-           show_shapes=True,
-           show_layer_names=True,
-           rankdir='TD',  # Change layout to left-to-right
-           dpi=150
-           )
-
-'''
+# Plot model with enhanced visibility
+plot_model(
+    model,
+    to_file='/gpfs/fs7/aafc/phenocart/PhenomicsProjects/UFPSGPSCProject/2_RGB/FloweringandMaturity/Output/FandM_plot_attn_nEW_detailed.png',
+    show_shapes=True,  # Show the tensor shapes at each layer
+    show_layer_names=True,  # Show layer names
+    rankdir='TD',  # Change layout from 'TD' (top-down) to 'TB' (top-bottom)
+    expand_nested=True,  # Expand nested models (submodels inside layers)
+    dpi=150  # Increase DPI for better clarity
+)
 
 # Set up early stopping
 early_stopping = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=25, restore_best_weights=True)
 
 # Initialize best metrics for tracking
-best_r2_yield = -np.inf
-best_rmse_yield = np.inf
+best_r2_flowering = -np.inf
+best_rmse_flowering = np.inf
+best_r2_maturity = -np.inf
+best_rmse_maturity = np.inf
 
 # Results storage
 results = []
@@ -940,7 +934,8 @@ x_seedingdate = x_seedingdate[shuffle_indices]
 x_imagedate = x_imagedate[shuffle_indices]
 x_lidar = x_lidar[shuffle_indices]
 x_weather = x_weather[shuffle_indices]
-y_yield = y_yield[shuffle_indices]
+y_flowering = y_flowering[shuffle_indices]
+y_maturity = y_maturity[shuffle_indices]
 
 # Split a test dataset (20% of total data)
 (
@@ -950,10 +945,11 @@ y_yield = y_yield[shuffle_indices]
     x_train_imagedate, x_test_imagedate,
     x_train_lidar, x_test_lidar,
     x_train_weather, x_test_weather,
-    y_train_yield, y_test_yield,
+    y_train_flowering, y_test_flowering,
+    y_train_maturity, y_test_maturity,
 ) = train_test_split(
     x_rgbimage, x_nirimage, x_seedingdate, x_imagedate, x_lidar, x_weather,
-    y_yield, test_size=0.2, random_state=None
+    y_flowering, y_maturity, test_size=0.2, random_state=None
 )
 
 # Run the training process 50 times
@@ -961,7 +957,7 @@ for repetition in range(1, 51):
     print(f"Repetition: {repetition}")
 
     # Define the desired chunk size
-    desired_chunk_size = 2000
+    desired_chunk_size = 1000
 
     # Calculate the number of chunks needed dynamically
     total_train_samples = len(x_train_rgbimage)
@@ -988,7 +984,8 @@ for repetition in range(1, 51):
         x_chunk_imagedate = x_train_imagedate[start:end]
         x_chunk_lidar = x_train_lidar[start:end]
         x_chunk_weather = x_train_weather[start:end]
-        y_chunk_yield = y_train_yield[start:end]
+        y_chunk_flowering = y_train_flowering[start:end]
+        y_chunk_maturity = y_train_maturity[start:end]
 
         # Split chunk into training and validation
         (
@@ -998,10 +995,11 @@ for repetition in range(1, 51):
             x_chunk_imagedate_train, x_chunk_imagedate_val,
             x_chunk_lidar_train, x_chunk_lidar_val,
             x_chunk_weather_train, x_chunk_weather_val,
-            y_chunk_yield_train, y_chunk_yield_val,
+            y_chunk_flowering_train, y_chunk_flowering_val,
+            y_chunk_maturity_train, y_chunk_maturity_val,
         ) = train_test_split(
             x_chunk_rgbimage, x_chunk_nirimage, x_chunk_seedingdate, x_chunk_imagedate, x_chunk_lidar, x_chunk_weather,
-            y_chunk_yield, test_size=0.2, random_state=None
+            y_chunk_flowering, y_chunk_maturity, test_size=0.2, random_state=None
         )
 
         # Train the model on the current chunk
@@ -1015,7 +1013,8 @@ for repetition in range(1, 51):
                 "weather_data": x_chunk_weather_train,
             },
             {
-                "yield": np.array(y_chunk_yield_train, dtype=np.float32),
+                "flowering": y_chunk_flowering_train,
+                "maturity": y_chunk_maturity_train,
             },
             validation_data=(
                 {
@@ -1027,7 +1026,8 @@ for repetition in range(1, 51):
                     "weather_data": x_chunk_weather_val,
                 },
                 {
-                    "yield": np.array(y_chunk_yield_val, dtype=np.float32),
+                    "flowering": y_chunk_flowering_val,
+                    "maturity": y_chunk_maturity_val,
                 },
             ),
             epochs=1000,
@@ -1052,43 +1052,67 @@ for repetition in range(1, 51):
     )
 
     # Extract predictions for flowering and maturity
-    y_pred_yield = y_pred.flatten()
+    y_pred_flowering = y_pred[0].flatten()
+    y_pred_maturity = y_pred[1].flatten()
 
     # Flatten the true values
-    y_true_yield = y_test_yield.flatten()  # Set up early stopping
+    y_true_flowering = y_test_flowering.flatten()  # Set up early stopping
     early_stopping = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=25, restore_best_weights=True)
 
+    y_true_maturity = y_test_maturity.flatten()
+
     # Metrics for flowering
-    R2_yield = 1 - np.sum((y_true_yield - y_pred_yield) ** 2) / np.sum((y_true_yield - np.mean(y_true_yield)) ** 2)
-    RMSE_yield = np.sqrt(np.mean((y_true_yield - y_pred_yield) ** 2))
-    MAPE_yield = np.mean(np.abs((y_true_yield - y_pred_yield) / y_true_yield)) * 100
+    R2_flowering = 1 - np.sum((y_true_flowering - y_pred_flowering) ** 2) / np.sum(
+        (y_true_flowering - np.mean(y_true_flowering)) ** 2)
+    RMSE_flowering = np.sqrt(np.mean((y_true_flowering - y_pred_flowering) ** 2))
+    MAPE_flowering = np.mean(np.abs((y_true_flowering - y_pred_flowering) / y_true_flowering)) * 100
+
+    # Metrics for maturity
+    R2_maturity = 1 - np.sum((y_true_maturity - y_pred_maturity) ** 2) / np.sum(
+        (y_true_maturity - np.mean(y_true_maturity)) ** 2)
+    RMSE_maturity = np.sqrt(np.mean((y_true_maturity - y_pred_maturity) ** 2))
+    MAPE_maturity = np.mean(np.abs((y_true_maturity - y_pred_maturity) / y_true_maturity)) * 100
 
     # Track the best model for flowering
-    if R2_yield > best_r2_yield or RMSE_yield < best_rmse_yield:
-        best_r2_yield = R2_yield
-        best_rmse_yield = RMSE_yield
-        best_model_path_yield = f'{OUTPUT_PATH}/best_model_for_yield_attn.h5'
-        model.save(best_model_path_yield)  # Save the best model for flowering
-        print(f"New best yield model saved with R²: {R2_yield:.2f}, RMSE: {RMSE_yield:.2f}")
+    if R2_flowering > best_r2_flowering or RMSE_flowering < best_rmse_flowering:
+        best_r2_flowering = R2_flowering
+        best_rmse_flowering = RMSE_flowering
+        best_model_path_flowering = '/gpfs/fs7/aafc/phenocart/PhenomicsProjects/UFPSGPSCProject/2_RGB/FloweringandMaturity/Output/best_model_for_flowering_attn.h5'
+        model.save(best_model_path_flowering)  # Save the best model for flowering
+        print(f"New best flowering model saved with R²: {R2_flowering:.2f}, RMSE: {RMSE_flowering:.2f}")
+
+    # Track the best model for maturity
+    if R2_maturity > best_r2_maturity or RMSE_maturity < best_rmse_maturity:
+        best_r2_maturity = R2_maturity
+        best_rmse_maturity = RMSE_maturity
+        best_model_path_maturity = '/gpfs/fs7/aafc/phenocart/PhenomicsProjects/UFPSGPSCProject/2_RGB/FloweringandMaturity/Output/best_model_for_maturity_attn.h5'
+        model.save(best_model_path_maturity)  # Save the best model for maturity
+        print(f"New best maturity model saved with R²: {R2_maturity:.2f}, RMSE: {RMSE_maturity:.2f}")
 
     # Append results
     results.append({
         'Repetition': repetition,
-        'R2 Score Yield (%)': R2_yield * 100,
-        'RMSE Yield': RMSE_yield,
-        'MAPE Yield (%)': MAPE_yield,
+        'R2 Score Flowering (%)': R2_flowering * 100,
+        'RMSE Flowering': RMSE_flowering,
+        'MAPE Flowering (%)': MAPE_flowering,
+        'R2 Score Maturity (%)': R2_maturity * 100,
+        'RMSE Maturity': RMSE_maturity,
+        'MAPE Maturity (%)': MAPE_maturity,
     })
 
     # Print results
     print(f"Repetition {repetition}")
-    print(f"R2 Score Yield (%): {R2_yield * 100:.2f}")
-    print(f"RMSE Yield: {RMSE_yield}")
-    print(f"MAPE Yield (%): {MAPE_yield:.2f}")
+    print(f"R2 Score Flowering (%): {R2_flowering * 100:.2f}")
+    print(f"RMSE Flowering: {RMSE_flowering}")
+    print(f"MAPE Flowering (%): {MAPE_flowering:.2f}")
+    print(f"R2 Score Maturity (%): {R2_maturity * 100:.2f}")
+    print(f"RMSE Maturity: {RMSE_maturity}")
+    print(f"MAPE Maturity (%): {MAPE_maturity:.2f}")
+    print("-" * 50)
 
     # Save results to an Excel file
     results_df = pd.DataFrame(results)
-    results_file_path = (
-        f'{OUTPUT_PATH}/Yield_attn.xlsx')
+    results_file_path = '/gpfs/fs7/aafc/phenocart/PhenomicsProjects/UFPSGPSCProject/2_RGB/FloweringandMaturity/Output/FloweringandMaturity_attn.xlsx'
     results_df.to_excel(results_file_path, index=False)
     print(f"Results saved to {results_file_path}")
 
