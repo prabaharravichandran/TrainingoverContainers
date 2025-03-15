@@ -1,4 +1,6 @@
-# Building containers for training deep learning models
+# Building containers for training deep learning models at High-Performance Clusters(HPCs)
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 ## Building containers
 
@@ -48,6 +50,8 @@ squeue -u prr000
 srun --job-id=xxxxxxx --pty bash
 ```
 
+From sandbox,
+
 ```bash
 . ssmuse-sh -d /fs/ssm/hpco/exp/cuda-12.4.1
 apptainer shell \
@@ -58,6 +62,32 @@ apptainer shell \
    --no-home \
    trainingcontainer_sandbox/
 ```
+
+writable
+
+```bash
+. ssmuse-sh -d /fs/ssm/hpco/exp/cuda-12.4.1
+apptainer shell \
+   --writable \
+   --fakeroot \
+   --bind /gpfs/fs7/aafc/phenocart:/mnt:rw \
+   --contain \
+   --no-home \
+   trainingcontainer_sandbox/
+```
+
+```bash
+. ssmuse-sh -d /fs/ssm/hpco/exp/cuda-12.4.1
+apptainer shell \
+   --nv \
+   --fakeroot \
+   --bind /gpfs/fs7/aafc/phenocart:/mnt \
+   --contain \
+   --no-home \
+   trainingcontainer_sandbox.sif
+```
+
+From sif, sifs are usually faster;
 
 ```bash
 . /home/venv/bin/activate
@@ -74,4 +104,44 @@ export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
 export LIBDEVICE_DIR=/usr/local/cuda/nvvm/libdevice
 . /home/venv/bin/activate
 python /home/ubuntu/scripts/fandmestimation.py
+```
+Submitting this job using slurm,
+
+```bash
+#!/bin/bash -l
+#SBATCH --job-name=Process
+#SBATCH --output=Process.out
+#SBATCH --no-requeue
+#SBATCH --partition=gpu_a100
+#SBATCH --account=aafc_phenocart__gpu_a100
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem-per-cpu=128000M  # Request 128 GB per CPU
+#SBATCH --gres=gpu:4
+#SBATCH --qos=low
+#SBATCH --time=48:00:00
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=prabahar.ravichandran@agr.gc.ca
+
+```
+
+```bash
+rsync --recursive --progress --stats --checksum -e "ssh -i /home/prr000/.ssh/hybridcloud2025_GPSC" ufps 3.98.237.27:/fs/phenocart-app/prr000/Projects/Deployment
+```
+
+lscpu > cpu_static_info.txt
+cat /proc/cpuinfo >> cpu_static_info.txt
+
+salloc
+
+```bash
+salloc \
+  --job-name=Process \
+  --partition=gpu_a100 \
+  --account=aafc_phenocart__gpu_a100 \
+  --nodes=1 \
+  --mem=128G \
+  --gpus=4 \
+  --qos=low \
+  --time=4:00:00
 ```
